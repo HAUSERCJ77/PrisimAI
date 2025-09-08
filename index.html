@@ -1,79 +1,138 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Offline AI — Chromebook</title>
   <style>
-    body { background:#0f1724; color:#e6eef8; font-family:sans-serif; padding:20px; }
-    #chat { background:#111827; border-radius:8px; padding:12px; height:300px; overflow-y:auto; }
-    .msg { margin:6px 0; padding:8px 12px; border-radius:6px; max-width:70%; }
-    .user { background:#7c3aed; color:#fff; margin-left:auto; }
-    .bot { background:#1e293b; }
-    textarea { width:100%; margin-top:10px; padding:10px; border-radius:6px; background:#0b1220; color:#fff; }
-    button { margin-top:10px; padding:10px 14px; border:none; border-radius:6px; background:#7c3aed; color:#fff; font-weight:bold; cursor:pointer; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #0f172a;
+      color: white;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      padding: 1rem;
+      font-size: 1.5rem;
+      font-weight: bold;
+    }
+    #chat {
+      flex: 1;
+      padding: 1rem;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+    .msg {
+      padding: 0.5rem 1rem;
+      border-radius: 12px;
+      max-width: 70%;
+      word-wrap: break-word;
+    }
+    .user {
+      align-self: flex-end;
+      background: #7c3aed;
+    }
+    .bot {
+      align-self: flex-start;
+      background: #1e293b;
+    }
+    footer {
+      padding: 1rem;
+      display: flex;
+      gap: 0.5rem;
+      border-top: 1px solid #1e293b;
+    }
+    input {
+      flex: 1;
+      padding: 0.5rem;
+      border-radius: 8px;
+      border: none;
+      outline: none;
+    }
+    button {
+      padding: 0.5rem 1rem;
+      border: none;
+      border-radius: 8px;
+      background: #7c3aed;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+    #status {
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+      color: #94a3b8;
+    }
   </style>
 </head>
 <body>
-  <h1>Offline AI — Chromebook</h1>
+  <header>Offline AI — Chromebook</header>
   <div id="chat"></div>
-  <textarea id="prompt" placeholder="Type your message..."></textarea>
-  <button id="send">Send</button>
-  <p id="status">Status: idle</p>
+  <footer>
+    <input id="input" type="text" placeholder="Type your message..."/>
+    <button id="send">Send</button>
+  </footer>
+  <div id="status">Loading...</div>
 
   <script type="module">
-    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js';
+    import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js";
 
-    const chat = document.getElementById("chat");
-    const promptEl = document.getElementById("prompt");
+    const chatEl = document.getElementById("chat");
+    const inputEl = document.getElementById("input");
     const sendBtn = document.getElementById("send");
     const statusEl = document.getElementById("status");
 
-    let generator = null;
+    // Configure Xenova environment
+    env.allowRemoteModels = true;
+    env.remoteModelsHost = "https://huggingface.co/Xenova"; // Xenova mirrors
+    env.useBrowserCache = true;
 
-    function appendMessage(role, text) {
-      const div = document.createElement("div");
-      div.className = "msg " + (role === "user" ? "user" : "bot");
-      div.textContent = text;
-      chat.appendChild(div);
-      chat.scrollTop = chat.scrollHeight;
-    }
-
+    let generator;
     async function loadModel() {
-      if (generator) return;
-      statusEl.textContent = "Status: loading model...";
-      const modelId = "Xenova/tiny-random-gpt2"; // always works, no auth needed
-      generator = await pipeline("text-generation", modelId, {
-        progress_callback: p => statusEl.textContent = "Loading: " + Math.round(p*100) + "%"
+      statusEl.textContent = "Loading model...";
+      generator = await pipeline("text-generation", "Xenova/distilgpt2", {
+        progress_callback: (p) => {
+          statusEl.textContent = "Loading: " + Math.round(p * 100) + "%";
+        }
       });
-      statusEl.textContent = "Status: model loaded";
+      statusEl.textContent = "Model ready ✅ (works offline after first load)";
+    }
+    loadModel();
+
+    function addMessage(text, cls) {
+      const div = document.createElement("div");
+      div.className = "msg " + cls;
+      div.textContent = text;
+      chatEl.appendChild(div);
+      chatEl.scrollTop = chatEl.scrollHeight;
     }
 
-    sendBtn.addEventListener("click", async () => {
-      const prompt = promptEl.value.trim();
-      if (!prompt) return;
-      appendMessage("user", prompt);
-      promptEl.value = "";
-      await loadModel();
-      statusEl.textContent = "Status: generating...";
+    async function handleSend() {
+      const text = inputEl.value.trim();
+      if (!text || !generator) return;
+      addMessage(text, "user");
+      inputEl.value = "";
+
+      statusEl.textContent = "Thinking...";
       try {
-        const out = await generator(prompt, { max_new_tokens: 50 });
-        const reply = out[0].generated_text.replace(prompt, "").trim();
-        appendMessage("bot", reply);
-        statusEl.textContent = "Status: idle";
-      } catch (e) {
-        console.error(e);
-        statusEl.textContent = "Status: error";
+        const out = await generator(text, { max_new_tokens: 50 });
+        addMessage(out[0].generated_text, "bot");
+      } catch (err) {
+        console.error(err);
+        addMessage("⚠️ Error: " + err.message, "bot");
       }
-    });
-
-    // Register service worker
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("./sw.js").then(
-        () => console.log("SW registered"),
-        e => console.warn("SW failed", e)
-      );
+      statusEl.textContent = "Model ready ✅";
     }
+
+    sendBtn.onclick = handleSend;
+    inputEl.addEventListener("keypress", e => {
+      if (e.key === "Enter") handleSend();
+    });
   </script>
 </body>
 </html>
