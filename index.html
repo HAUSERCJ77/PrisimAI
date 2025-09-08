@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Offline AI — Chromebook (single file)</title>
+  <style>
+    /* Minimal modern styling (tailwind-ish vibes but pure CSS) */
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#94a3b8;--accent:#7c3aed}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}
+    body{background:linear-gradient(180deg,#071024 0%,#081226 100%);color:#e6eef8;display:flex;align-items:center;justify-content:center;padding:24px}
+    .app{width:100%;max-width:920px}
+    header{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+    .logo{width:48px;height:48px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#0ea5a7);display:flex;align-items:center;justify-content:center;font-weight:700}
+    h1{margin:0;font-size:20px}
+    .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;padding:18px;box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+    .controls{display:flex;gap:8px;margin-top:12px}
+    textarea{width:100%;min-height:110px;padding:12px;border-radius:8px;border:1px solid rgba(255,255,255,0.03);background:transparent;color:inherit;resize:vertical}
+    button{background:var(--accent);border:none;padding:10px 14px;border-radius:8px;color:white;font-weight:600;cursor:pointer}
+    button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06)}
+    .outputs{margin-top:14px;display:flex;flex-direction:column;gap:10px}
+    .output{padding:12px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.01)}
+    .meta{font-size:13px;color:var(--muted);display:flex;justify-content:space-between;margin-top:8px}
+    .small{font-size:13px;color:var(--muted)}
+    footer{margin-top:12px;color:var(--muted);font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="logo">AI</div>
+      <div>
+        <h1>Offline AI — Chromebook (single file)</h1>
+        <div class="small">Host on GitHub Pages → visit once online to cache model, then go offline</div>
+      </div>
+    </header>
+
+    <div class="card">
+      <div>
+        <label for="prompt" class="small">Prompt</label>
+        <textarea id="prompt" placeholder="Ask something...\nExample: Explain binary search like I'm 12." ></textarea>
+        <div class="controls">
+          <button id="generate">Generate</button>
+          <button id="clear" class="secondary">Clear output</button>
+          <button id="download-log" class="secondary">Download log</button>
+        </div>
+        <div class="meta">
+          <div id="status">Status: <strong>idle</strong></div>
+          <div id="model-name">Model: <strong>not loaded</strong></div>
+        </div>
+      </div>
+
+      <div class="outputs" id="outputs"></div>
+
+      <footer>
+        Tips: Use small models (distilGPT2 / tiny) on Chromebooks. If you get a "WebGPU required" warning, try enabling chrome://flags/#enable-unsafe-webgpu or use a fallback runtime.
+      </footer>
+    </div>
+  </div>
+
+  <script type="module">
+    // Single-file offline AI using transformers.js (xenova). This will try WebGPU & fall back to WASM.
+    // How it works: transformers.js will fetch model files; a service worker (sw.js) caches them on first visit.
+
+    import { pipeline } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers/dist/transformers.min.js';
+
+    const statusEl = document.getElementById('status');
+    const outputsEl = document.getElementById('outputs');
+    const modelNameEl = document.getElementById('model-name');
+    const promptEl = document.getElementById('prompt');
+    const genBtn = document.getElementById('generate');
+    const clearBtn = document.getElementById('clear');
+    const downloadBtn = document.getElementById('download-log');
+
+    let generator = null;
+    let log = [];
+
+    function setStatus(s){ statusEl.innerHTML = 'Status: <strong>'+s+'</strong>'; }
+    function setModelName(n){ modelNameEl.innerHTML = 'Model: <strong>'+n+'</strong>'; }
+
+    async function ensureSW(){
+      if('serviceWorker' in navigator){
+        try{
+          await navigator.serviceWorker.register('/sw.js');
+          console.log('Service worker registered');
+        }catch(e){ console.warn('SW reg failed', e); }
+      }
+    }
+
+    async function loadModel(){
+      setStatus('loading model...');
+      // Choose a small model to keep it lightweight for Chromebooks. You can change this to another model name.
+      const modelId = 'Xenova/distil-gpt2'; // tiny-ish text-generation model in xenova CDN
+      setModelName(modelId);
+      try{
+        // transformers.js accepts an options object — we prefer WebGPU but allow fallback
+        generator = await pipeline('text-generation', modelId, { progress_callback: (p)=>{ setStatus('loading: '+Math.round(p*100)+'%'); } });
+        setStatus('model loaded');
+      }catch(err){
+        console.error('Model load error', err);
+        setStatus('model load failed — see console');
+        // try one more time with explicit backend suggestion (wasm)
+        try{
+          generator = await pipeline('text-generation', modelId, { wasm: true });
+          setStatus('model loaded (WASM fallback)');
+        }catch(e){
+          console.error('Fallback failed', e);
+          setStatus('failed to load model');
+        }
+      }
+    }
+
+    function appendOutput(text){
+      const div = document.createElement('div');
+      div.className = 'output';
+      div.textContent = text;
+      outputsEl.prepend(div);
+    }
+
+    genBtn.addEventListener('click', async ()=>{
+      const prompt = promptEl.value.trim();
+      if(!prompt) return alert('Write a prompt first!');
+      if(!generator){
+        setStatus('model not ready — loading now...');
+        await loadModel();
+        if(!generator) return;
+      }
+      setStatus('generating...');
+      try{
+        const r = await generator(prompt, { max_new_tokens: 128, do_sample: true, temperature: 0.7 });
+        const text = Array.isArray(r) ? r[0].generated_text : r.generated_text ?? JSON.stringify(r);
+        appendOutput(text);
+        log.push({prompt, text, ts: new Date().toISOString()});
+        setStatus('idle');
+      }catch(e){
+        console.error('generation failed', e);
+        setStatus('generation error — see console');
+      }
+    });
+
+    clearBtn.addEventListener('click', ()=>{ outputsEl.innerHTML = ''; });
+
+    downloadBtn.addEventListener('click', ()=>{
+      const blob = new Blob([JSON.stringify(log, null, 2)], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'offline-ai-log.json'; a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    // Auto-run: register SW and kick off model load in background (so user can request while loading)
+    (async ()=>{
+      await ensureSW();
+      // load model but don't block UI — however first-time load will require network
+      loadModel();
+    })();
+
+  </script>
+</body>
+</html>
